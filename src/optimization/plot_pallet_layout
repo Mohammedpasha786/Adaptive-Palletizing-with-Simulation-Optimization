@@ -1,0 +1,119 @@
+function ax = plotPalletLayout(layout, pallet, options)
+%PLOTPALLETLAYOUT Visualize a pallet layout as a 3D bar/box plot.
+%
+%   AX = PLOTPALLETLAYOUT(LAYOUT, PALLET)
+%   AX = PLOTPALLETLAYOUT(LAYOUT, PALLET, 'Title', 'GA layout')
+%
+%   LAYOUT - table as returned by SHELFPACK / any layout optimizer
+%   PALLET - struct with fields length, width (mm) and optionally
+%            maxHeight (mm)
+%
+%   Name-value options:
+%     Title       (default "") - axes title
+%     Axes        (default []) - existing axes to plot into. If empty, a
+%                 new figure and axes are created.
+%     ShowLabels  (default true) - label each box with its id
+%
+%   This function provides a lightweight, dependency-free substitute for
+%   Sim3D visualization, useful for quickly inspecting candidate layouts
+%   from the optimization algorithms in this folder. For full robot-cell
+%   visualization, see the Simulink/Sim3D models in `models/`.
+%
+%   Returns the axes handle AX used for plotting.
+
+arguments
+    layout table
+    pallet struct
+    options.Title (1,1) string = ""
+    options.Axes = []
+    options.ShowLabels (1,1) logical = true
+end
+
+if isempty(options.Axes)
+    figure;
+    ax = axes;
+else
+    ax = options.Axes;
+end
+
+hold(ax, 'on');
+grid(ax, 'on');
+view(ax, 3);
+axis(ax, 'equal');
+
+% Draw the pallet footprint as a flat outline at z = 0.
+palletOutline = [ ...
+    0, 0, 0; ...
+    pallet.length, 0, 0; ...
+    pallet.length, pallet.width, 0; ...
+    0, pallet.width, 0; ...
+    0, 0, 0];
+plot3(ax, palletOutline(:,1), palletOutline(:,2), palletOutline(:,3), ...
+    'k-', 'LineWidth', 1.5);
+
+colors = lines(max(height(layout), 1));
+
+for i = 1:height(layout)
+    if ~layout.placed(i)
+        continue
+    end
+
+    x0 = layout.x(i);
+    y0 = layout.y(i);
+    z0 = layout.z(i);
+    dx = layout.placedLength(i);
+    dy = layout.placedWidth(i);
+    dz = layout.height(i);
+
+    drawBox(ax, x0, y0, z0, dx, dy, dz, colors(i,:));
+
+    if options.ShowLabels
+        text(ax, x0 + dx/2, y0 + dy/2, z0 + dz/2, string(layout.id(i)), ...
+            'HorizontalAlignment', 'center', 'FontSize', 8);
+    end
+end
+
+xlabel(ax, 'X (mm) - pallet length');
+ylabel(ax, 'Y (mm) - pallet width');
+zlabel(ax, 'Z (mm) - height');
+
+if options.Title ~= ""
+    title(ax, options.Title);
+end
+
+if isfield(pallet, 'maxHeight') && ~isempty(pallet.maxHeight)
+    zlim(ax, [0, max(pallet.maxHeight, 1)]);
+end
+xlim(ax, [0, pallet.length]);
+ylim(ax, [0, pallet.width]);
+
+hold(ax, 'off');
+
+end
+
+% ------------------------------------------------------------------
+function drawBox(ax, x0, y0, z0, dx, dy, dz, faceColor)
+%DRAWBOX Draw a single axis-aligned cuboid using patch().
+
+vertices = [ ...
+    x0,    y0,    z0;
+    x0+dx, y0,    z0;
+    x0+dx, y0+dy, z0;
+    x0,    y0+dy, z0;
+    x0,    y0,    z0+dz;
+    x0+dx, y0,    z0+dz;
+    x0+dx, y0+dy, z0+dz;
+    x0,    y0+dy, z0+dz];
+
+faces = [ ...
+    1 2 3 4;  % bottom
+    5 6 7 8;  % top
+    1 2 6 5;  % side
+    2 3 7 6;  % side
+    3 4 8 7;  % side
+    4 1 5 8]; % side
+
+patch(ax, 'Vertices', vertices, 'Faces', faces, ...
+    'FaceColor', faceColor, 'FaceAlpha', 0.6, 'EdgeColor', 'k');
+
+end
