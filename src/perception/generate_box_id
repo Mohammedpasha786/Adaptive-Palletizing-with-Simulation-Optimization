@@ -1,0 +1,25 @@
+function id = generateBoxID(options)
+%GENERATEBOXID Generate a random box identifier string (mock QR/barcode).
+%
+%   ID = GENERATEBOXID()
+%   ID = GENERATEBOXID('Prefix', "PAL", 'NumDigits', 6)
+%
+%   Name-value options:
+%     Prefix    (default "BOX") - string prefix
+%     NumDigits (default 5)     - number of random digits after the prefix
+%
+%   ID is a string such as "BOX-04821". In a real deployment this would
+%   instead be read from a printed QR code or barcode (e.g., via the
+%   Computer Vision Toolbox) and matched against a predefined dataset.
+
+arguments
+    options.Prefix (1,1) string = "BOX"
+    options.NumDigits (1,1) double {mustBePositive, mustBeInteger} = 5
+end
+
+maxVal = 10^options.NumDigits - 1;
+num = randi([0, maxVal]);
+id = sprintf('%s-%0*d', options.Prefix, options.NumDigits, num);
+id = string(id);
+
+end
