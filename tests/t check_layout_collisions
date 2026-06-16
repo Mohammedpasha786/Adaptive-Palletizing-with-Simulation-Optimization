@@ -1,0 +1,60 @@
+classdef tCheckLayoutCollisions < matlab.unittest.TestCase
+%TCHECKLAYOUTCOLLISIONS Unit tests for checkLayoutCollisions.m
+
+    properties (Constant)
+        Pallet = struct('length', 1200, 'width', 800, 'maxHeight', 1200, 'maxWeight', 1000)
+    end
+
+    methods (TestMethodSetup)
+        function addPaths(tc) %#ok<MANU>
+            addpath(genpath(fullfile(fileparts(fileparts(mfilename('fullpath'))), 'src')));
+        end
+    end
+
+    methods (Test)
+        function testValidLayoutNoIssues(tc)
+            boxes = makeBoxTable({'A','B'}, [300;300], [200;200], [100;100], [4;4]);
+            layout = shelfPack(boxes, [1 2], false(2,1), tc.Pallet, 0);
+            [isValid, issues] = checkLayoutCollisions(layout, tc.Pallet);
+            tc.verifyTrue(isValid);
+            tc.verifyEmpty(issues);
+        end
+
+        function testOutOfBoundsDetected(tc)
+            % Manually place a box outside the pallet.
+            boxes = makeBoxTable({'X'}, 300, 200, 100, 3);
+            layout = shelfPack(boxes, 1, false, tc.Pallet, 0);
+            layout.x(1) = 1100; % will exceed pallet length 1200 with placedLength 300
+            [isValid, issues] = checkLayoutCollisions(layout, tc.Pallet);
+            tc.verifyFalse(isValid);
+            tc.verifyNotEmpty(issues);
+        end
+
+        function testOverlapDetected(tc)
+            % Two boxes manually placed at the same location.
+            boxes = makeBoxTable({'P','Q'}, [300;300], [200;200], [100;100], [3;3]);
+            layout = shelfPack(boxes, [1 2], false(2,1), tc.Pallet, 0);
+            % Force overlap: put Q at same location as P.
+            layout.x(2) = layout.x(1);
+            layout.y(2) = layout.y(1);
+            layout.z(2) = layout.z(1);
+            [isValid, issues] = checkLayoutCollisions(layout, tc.Pallet);
+            tc.verifyFalse(isValid);
+            tc.verifyNotEmpty(issues);
+        end
+
+        function testUnplacedBoxIgnored(tc)
+            boxes = makeBoxTable({'OK','HUGE'}, [300;9000], [200;9000], [100;100], [3;3]);
+            layout = shelfPack(boxes, [1 2], false(2,1), tc.Pallet, 0);
+            % HUGE is unplaced; should not trigger a collision report.
+            [isValid, issues] = checkLayoutCollisions(layout, tc.Pallet);
+            tc.verifyTrue(isValid);
+            tc.verifyEmpty(issues);
+        end
+    end
+end
+
+function t = makeBoxTable(ids, L, W, H, wt)
+    ids = string(ids(:)); L = L(:); W = W(:); H = H(:); wt = wt(:);
+    t = table(ids, L, W, H, wt, 'VariableNames', {'id','length','width','height','weight'});
+end
