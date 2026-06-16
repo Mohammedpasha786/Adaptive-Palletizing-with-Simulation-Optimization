@@ -1,0 +1,75 @@
+%   Runs greedy, GA, SA (if Global Optimization Toolbox available) and
+%   MILP (if Optimization Toolbox available) on the predefined sample
+%   dataset and prints a comparison table of utilisation and runtime.
+%
+%   Usage:
+%       cd <repo root>
+%       run scripts/run_optimizer_comparison.m
+
+clear; clc; close all;
+
+repoRoot = fileparts(fileparts(mfilename('fullpath')));
+addpath(genpath(fullfile(repoRoot, 'src')));
+addpath(genpath(fullfile(repoRoot, 'data')));
+
+fprintf('=== Optimizer Comparison ===\n\n');
+
+%% Load data
+csvPath = fullfile(repoRoot, 'data', 'boxes_sample.csv');
+opts = detectImportOptions(csvPath); opts = setvartype(opts, 'id', 'string');
+boxes  = readtable(csvPath, opts);
+pallet = struct('length', 1200, 'width', 800, 'maxHeight', 1200, 'maxWeight', 1000);
+
+optimizers = {'greedy', 'ga', 'sa', 'milp'};
+names      = string(optimizers);
+utils      = zeros(numel(optimizers), 1);
+unplaced   = zeros(numel(optimizers), 1);
+runtimes   = zeros(numel(optimizers), 1);
+available  = true(numel(optimizers), 1);
+
+for k = 1:numel(optimizers)
+    name = optimizers{k};
+    try
+        t0 = tic;
+        switch name
+            case 'greedy'
+                [layout, info] = greedyLayoutHeuristic(boxes, pallet);
+            case 'ga'
+                [layout, info] = gaLayoutOptimizer(boxes, pallet, ...
+                    'MaxGenerations', 50, 'PopulationSize', 30, 'Display', 'off');
+            case 'sa'
+                [layout, info] = saLayoutOptimizer(boxes, pallet, ...
+                    'MaxIterations', 500, 'Display', 'off');
+            case 'milp'
+                [layout, info] = milpLayoutOptimizer(boxes, pallet, ...
+                    'MaxLayers', 3, 'Display', 'off');
+        end
+        runtimes(k)  = toc(t0);
+        utils(k)     = info.utilization;
+        unplaced(k)  = info.numUnplaced;
+
+        figure('Name', sprintf('%s layout', upper(name)));
+        plotPalletLayout(layout, pallet, 'Title', sprintf('%s optimizer', upper(name)));
+    catch ME
+        if contains(ME.identifier, 'ToolboxMissing')
+            fprintf('  [%s] Skipped — %s\n', upper(name), ME.message);
+            available(k) = false;
+        else
+            rethrow(ME);
+        end
+    end
+end
+
+%% Print comparison table
+fprintf('\n%-8s  %12s  %10s  %12s\n', 'Method', 'Utilisation', 'Unplaced', 'Time (s)');
+fprintf('%s\n', repmat('-', 1, 48));
+for k = 1:numel(optimizers)
+    if available(k)
+        fprintf('%-8s  %11.1f%%  %10d  %12.3f\n', ...
+            upper(names(k)), 100*utils(k), unplaced(k), runtimes(k));
+    else
+        fprintf('%-8s  %12s  %10s  %12s\n', upper(names(k)), 'N/A', 'N/A', 'N/A');
+    end
+end
+
+fprintf('\nComparison complete.\n');
