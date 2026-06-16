@@ -1,0 +1,85 @@
+function [boxes, acqInfo] = acquireBoxData(mode, options)
+%ACQUIREBOXDATA Acquire a batch of box descriptors for layout optimization.
+%
+%   [BOXES, ACQINFO] = ACQUIREBOXDATA("predefined")
+%   [BOXES, ACQINFO] = ACQUIREBOXDATA("predefined", 'Source', 'data/boxes_sample.csv')
+%   [BOXES, ACQINFO] = ACQUIREBOXDATA("realtime", 'NumBoxes', 8)
+%
+%   MODE - "predefined" or "realtime" (see docs/PROJECT_PROPOSAL.md,
+%          Step 3):
+%
+%     "predefined" - all box data is known in advance and loaded from a
+%       structured source (here, a CSV file with columns id, length,
+%       width, height, weight). Matches the "Excel / database / MAT-file"
+%       data source described in the project brief.
+%
+%     "realtime" - box parameters are not known in advance. Boxes are
+%       generated one at a time via SIMULATEBOXDETECTION (standing in for
+%       a conveyor vision system) and accumulated in a PERCEPTIONBUFFER
+%       until ReadyThreshold boxes are available.
+%
+%   Name-value options:
+%     Source         (default "data/boxes_sample.csv") - CSV path used in
+%                     "predefined" mode. Relative paths are resolved
+%                     relative to the repository root (two levels above
+%                     this file).
+%     NumBoxes        (default 8) - number of boxes to generate in
+%                     "realtime" mode (used as PerceptionBuffer's
+%                     ReadyThreshold).
+%     Seed            (default []) - RNG seed forwarded to
+%                     SIMULATEBOXDETECTION in "realtime" mode, for
+%                     reproducible tests.
+%
+%   BOXES   - table with columns id, length, width, height, weight
+%   ACQINFO - struct with fields mode, source (predefined) or
+%             numBoxes/seed (realtime)
+
+arguments
+    mode (1,1) string {mustBeMember(mode, ["predefined","realtime"])}
+    options.Source (1,1) string = ""
+    options.NumBoxes (1,1) double {mustBePositive, mustBeInteger} = 8
+    options.Seed = []
+end
+
+switch mode
+    case "predefined"
+        if options.Source == ""
+            thisFile = mfilename('fullpath');
+            controlDir = fileparts(thisFile);
+            srcDir = fileparts(controlDir);
+            repoRoot = fileparts(srcDir);
+            sourcePath = fullfile(repoRoot, 'data', 'boxes_sample.csv');
+        else
+            sourcePath = char(options.Source);
+        end
+
+        if ~isfile(sourcePath)
+            error('acquireBoxData:SourceNotFound', ...
+                'Predefined box data source not found: %s', sourcePath);
+        end
+
+        opts = detectImportOptions(sourcePath);
+        opts = setvartype(opts, 'id', 'string');
+        boxes = readtable(sourcePath, opts);
+        boxes = boxes(:, {'id','length','width','height','weight'});
+
+        acqInfo = struct('mode', mode, 'source', sourcePath);
+
+    case "realtime"
+        buf = PerceptionBuffer('ReadyThreshold', options.NumBoxes);
+
+        for k = 1:options.NumBoxes
+            if isempty(options.Seed)
+                seedArg = {};
+            else
+                seedArg = {'Seed', options.Seed + k};
+            end
+            newBox = simulateBoxDetection(1, seedArg{:});
+            buf.addBox(newBox);
+        end
+
+        boxes = buf.flush();
+        acqInfo = struct('mode', mode, 'numBoxes', options.NumBoxes, 'seed', options.Seed);
+end
+
+end
