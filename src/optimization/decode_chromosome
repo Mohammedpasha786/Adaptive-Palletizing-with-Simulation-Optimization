@@ -1,0 +1,40 @@
+function layout = decodeChromosome(x, boxes, pallet)
+%DECODECHROMOSOME Decode a continuous chromosome into a pallet layout.
+%
+%   LAYOUT = DECODECHROMOSOME(X, BOXES, PALLET)
+%
+%   X      - 1x(2*N) vector with entries in [0, 1], where N = height(BOXES).
+%            The first N entries are "priority" values: boxes are placed
+%            in order of decreasing priority. The last N entries are
+%            rotation thresholds: a value > 0.5 rotates the corresponding
+%            box's footprint by 90 degrees.
+%   BOXES  - table with columns id, length, width, height, weight
+%   PALLET - struct with fields length, width (mm)
+%
+%   This encoding lets continuous, bound-constrained optimizers such as
+%   GA (ga) and Simulated Annealing (simulannealbnd) search over discrete
+%   placement orders and rotation choices, by decoding each candidate
+%   vector into a layout via SHELFPACK.
+%
+%   LAYOUT is the table returned by SHELFPACK (single layer, z = 0).
+
+arguments
+    x (1,:) double
+    boxes table
+    pallet struct
+end
+
+n = height(boxes);
+if numel(x) ~= 2*n
+    error('decodeChromosome:InvalidLength', ...
+        'Expected a chromosome of length 2*%d (= %d), got %d.', n, 2*n, numel(x));
+end
+
+priorities = x(1:n);
+rotated = x(n+1:2*n) > 0.5;
+
+[~, order] = sort(priorities, 'descend');
+
+layout = shelfPack(boxes, order, rotated(:), pallet, 0);
+
+end
