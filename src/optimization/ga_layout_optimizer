@@ -1,0 +1,79 @@
+function [layout, info] = gaLayoutOptimizer(boxes, pallet, options)
+%GALAYOUTOPTIMIZER Genetic-algorithm-based pallet layout optimization.
+%
+%   [LAYOUT, INFO] = GALAYOUTOPTIMIZER(BOXES, PALLET)
+%   [LAYOUT, INFO] = GALAYOUTOPTIMIZER(BOXES, PALLET, 'MaxGenerations', 200)
+%
+%   BOXES   - table with columns id, length, width, height, weight
+%   PALLET  - struct with fields length, width (mm)
+%
+%   Name-value options:
+%     PopulationSize   (default 50)
+%     MaxGenerations   (default 100)
+%     UnplacedPenalty  (default 2)   - see LAYOUTOBJECTIVE
+%     Display          (default "off") - passed to optimoptions
+%     UseParallel      (default false)
+%
+%   Requires the Global Optimization Toolbox (ga). If the toolbox is not
+%   available, this function rethrows MATLAB's error with a pointer to
+%   GREEDYLAYOUTHEURISTIC as a fallback.
+%
+%   The chromosome is a 1x(2*N) vector in [0,1]^(2N), decoded by
+%   DECODECHROMOSOME into a placement order and rotation choices, then
+%   evaluated with LAYOUTOBJECTIVE via SHELFPACK.
+%
+%   LAYOUT - table as returned by SHELFPACK for the best chromosome found
+%   INFO   - struct with fields cost, utilization, numUnplaced, x (best
+%            chromosome), output (ga's output struct)
+
+arguments
+    boxes table
+    pallet struct
+    options.PopulationSize (1,1) double = 50
+    options.MaxGenerations (1,1) double = 100
+    options.UnplacedPenalty (1,1) double = 2
+    options.Display (1,1) string = "off"
+    options.UseParallel (1,1) logical = false
+end
+
+n = height(boxes);
+nvars = 2*n;
+
+lb = zeros(1, nvars);
+ub = ones(1, nvars);
+
+fitnessFcn = @(x) layoutObjective( ...
+    decodeChromosome(x, boxes, pallet), pallet, options.UnplacedPenalty);
+
+try
+    gaOpts = optimoptions('ga', ...
+        'PopulationSize', options.PopulationSize, ...
+        'MaxGenerations', options.MaxGenerations, ...
+        'Display', char(options.Display), ...
+        'UseParallel', options.UseParallel);
+
+    [xBest, fval, exitFlag, output] = ga(fitnessFcn, nvars, ...
+        [], [], [], [], lb, ub, [], gaOpts);
+catch ME
+    if strcmp(ME.identifier, 'MATLAB:UndefinedFunction')
+        error('gaLayoutOptimizer:ToolboxMissing', ...
+            ['ga() requires the Global Optimization Toolbox, which ' ...
+             'does not appear to be installed. Use ' ...
+             'GREEDYLAYOUTHEURISTIC for an optimizer that needs no ' ...
+             'additional toolboxes.']);
+    end
+    rethrow(ME);
+end
+
+layout = decodeChromosome(xBest, boxes, pallet);
+[~, layoutInfo] = layoutObjective(layout, pallet, options.UnplacedPenalty);
+
+info = struct( ...
+    'cost', fval, ...
+    'utilization', layoutInfo.utilization, ...
+    'numUnplaced', layoutInfo.numUnplaced, ...
+    'x', xBest, ...
+    'exitFlag', exitFlag, ...
+    'output', output);
+
+end
