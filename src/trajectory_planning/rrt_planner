@@ -1,0 +1,153 @@
+function [path, info] = rrtPlanner(startPos, goalPos, obstacles, workspace, options)
+%RRTPLANNER 3D Rapidly-exploring Random Tree path planner around box obstacles.
+%
+%   [PATH, INFO] = RRTPLANNER(STARTPOS, GOALPOS, OBSTACLES, WORKSPACE)
+%   [PATH, INFO] = RRTPLANNER(..., 'MaxIterations', 5000, 'StepSize', 50)
+%
+%   STARTPOS  - 1x3 [x y z] start position (mm)
+%   GOALPOS   - 1x3 [x y z] goal position (mm)
+%   OBSTACLES - struct array, each element with fields:
+%                 min - 1x3 [x y z] lower corner of an axis-aligned box (mm)
+%                 max - 1x3 [x y z] upper corner of an axis-aligned box (mm)
+%               Pass struct([]) or [] for no obstacles.
+%   WORKSPACE - struct with fields min, max (1x3 each), defining the
+%               sampling bounds (mm)
+%
+%   Name-value options:
+%     MaxIterations (default 5000)
+%     StepSize      (default 50)   - mm, max distance per tree extension
+%     GoalTolerance (default 25)   - mm, distance to goal considered "reached"
+%     GoalBias      (default 0.1)  - probability of sampling the goal
+%                                     directly each iteration
+%     CollisionSamples (default 10) - number of points checked along each
+%                                      candidate edge for collisions
+%
+%   PATH - Mx3 array of waypoints from START to GOAL (inclusive), or an
+%          empty 0x3 array if no path was found within MaxIterations.
+%   INFO - struct with fields: success (logical), iterations (double),
+%          numNodes (double)
+%
+%   This is a standard RRT (not RRT*): it finds a feasible, but not
+%   necessarily optimal, collision-free path. Use CHOMPSMOOTH to smooth
+%   and shorten the resulting path.
+
+arguments
+    startPos (1,3) double
+    goalPos (1,3) double
+    obstacles
+    workspace struct
+    options.MaxIterations (1,1) double = 5000
+    options.StepSize (1,1) double = 50
+    options.GoalTolerance (1,1) double = 25
+    options.GoalBias (1,1) double = 0.1
+    options.CollisionSamples (1,1) double = 10
+end
+
+if isempty(obstacles)
+    obstacles = struct('min', {}, 'max', {});
+end
+
+if isPointInAnyObstacle(startPos, obstacles) || isPointInAnyObstacle(goalPos, obstacles)
+    error('rrtPlanner:InvalidEndpoint', ...
+        'Start or goal position lies inside an obstacle.');
+end
+
+maxNodes = options.MaxIterations + 1;
+nodes = nan(maxNodes, 3);
+parent = zeros(maxNodes, 1);
+
+nodes(1, :) = startPos;
+numNodes = 1;
+
+success = false;
+goalNodeIdx = -1;
+
+lo = workspace.min;
+hi = workspace.max;
+
+for iter = 1:options.MaxIterations
+    if rand() < options.GoalBias
+        sample = goalPos;
+    else
+        sample = lo + rand(1,3) .* (hi - lo);
+    end
+
+    % Nearest existing node (brute force - fine for the small trees used
+    % in this project).
+    diffs = nodes(1:numNodes, :) - sample;
+    dists = sqrt(sum(diffs.^2, 2));
+    [minDist, nearestIdx] = min(dists);
+
+    if minDist < 1e-9
+        continue
+    end
+
+    direction = (sample - nodes(nearestIdx, :)) / minDist;
+    stepLen = min(options.StepSize, minDist);
+    newNode = nodes(nearestIdx, :) + direction * stepLen;
+
+    % Clamp to workspace bounds.
+    newNode = max(min(newNode, hi), lo);
+
+    if ~isEdgeCollisionFree(nodes(nearestIdx, :), newNode, obstacles, options.CollisionSamples)
+        continue
+    end
+
+    numNodes = numNodes + 1;
+    nodes(numNodes, :) = newNode;
+    parent(numNodes) = nearestIdx;
+
+    if norm(newNode - goalPos) <= options.GoalTolerance
+        if isEdgeCollisionFree(newNode, goalPos, obstacles, options.CollisionSamples)
+            numNodes = numNodes + 1;
+            nodes(numNodes, :) = goalPos;
+            parent(numNodes) = numNodes - 1;
+            goalNodeIdx = numNodes;
+            success = true;
+            break
+        end
+    end
+end
+
+if success
+    pathIdx = goalNodeIdx;
+    chain = pathIdx;
+    while parent(chain(end)) ~= 0
+        chain(end+1) = parent(chain(end)); %#ok<AGROW>
+    end
+    chain = fliplr(chain);
+    path = nodes(chain, :);
+    info = struct('success', true, 'iterations', iter, 'numNodes', numNodes);
+else
+    path = zeros(0,3);
+    info = struct('success', false, 'iterations', options.MaxIterations, 'numNodes', numNodes);
+end
+
+end
+
+% ------------------------------------------------------------------
+function tf = isPointInAnyObstacle(p, obstacles)
+tf = false;
+for k = 1:numel(obstacles)
+    if all(p >= obstacles(k).min) && all(p <= obstacles(k).max)
+        tf = true;
+        return
+    end
+end
+end
+
+% ------------------------------------------------------------------
+function tf = isEdgeCollisionFree(p1, p2, obstacles, numSamples)
+tf = true;
+if isempty(obstacles)
+    return
+end
+for s = 0:numSamples
+    t = s / numSamples;
+    p = p1 + t * (p2 - p1);
+    if isPointInAnyObstacle(p, obstacles)
+        tf = false;
+        return
+    end
+end
+end
