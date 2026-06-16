@@ -1,0 +1,49 @@
+function [layout, info] = greedyLayoutHeuristic(boxes, pallet, options)
+%GREEDYLAYOUTHEURISTIC Fast rule-based pallet layout (largest-area-first).
+%
+%   [LAYOUT, INFO] = GREEDYLAYOUTHEURISTIC(BOXES, PALLET)
+%   [LAYOUT, INFO] = GREEDYLAYOUTHEURISTIC(BOXES, PALLET, 'AllowRotation', false)
+%
+%   BOXES   - table with columns id, length, width, height, weight
+%   PALLET  - struct with fields length, width (mm)
+%
+%   Name-value options:
+%     AllowRotation (default true) - if true, each box is rotated 90
+%       degrees whenever that orientation has a smaller footprint length
+%       (helps it fit more shelves along the pallet length).
+%
+%   This heuristic requires no optimization toolboxes and is suitable for
+%   real-time mode, where a layout must be produced quickly as boxes
+%   arrive. Boxes are sorted by footprint area (largest first) and packed
+%   with SHELFPACK.
+%
+%   LAYOUT - table as returned by SHELFPACK
+%   INFO   - struct as returned by LAYOUTOBJECTIVE (utilization, etc.)
+
+arguments
+    boxes table
+    pallet struct
+    options.AllowRotation (1,1) logical = true
+    options.UnplacedPenalty (1,1) double = 2
+end
+
+n = height(boxes);
+
+if options.AllowRotation
+    % Rotate whenever the box's longer side fits better along the
+    % pallet's length axis (i.e., prefer placing the longer dimension
+    % along whichever pallet axis is larger).
+    rotated = boxes.width > boxes.length;
+else
+    rotated = false(n,1);
+end
+
+% Footprint area is rotation-invariant, so order by area regardless.
+footprintArea = boxes.length .* boxes.width;
+[~, order] = sort(footprintArea, 'descend');
+
+layout = shelfPack(boxes, order, rotated, pallet, 0);
+
+[~, info] = layoutObjective(layout, pallet, options.UnplacedPenalty);
+
+end
