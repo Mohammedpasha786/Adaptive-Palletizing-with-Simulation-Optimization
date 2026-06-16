@@ -1,0 +1,42 @@
+# ===== MATLAB =====
+*.asv
+*.m~
+*.autosave
+*.mexmaca*
+*.mexmaci*
+*.mexa64
+*.mexs64
+*.mexw32
+*.mexw64
+codegen/
+slprj/
+*.slxc
+*.slx.r*
+*.slx.bak
+*.mdl.r*
+sccprj/
+*.prj.lock
+
+# Generated/intermediate data (keep curated sample data in data/)
+*.mat
+!data/**/*.mat
+
+# ===== Simulink Cache / Code Generation =====
+*.sfx
+*.tmf
+*.tlc
+*.rtw
+*.mexutil
+
+# ===== Logs and reports =====
+test-results/
+code-coverage/
+*.log
+
+# ===== OS / Editor =====
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.vscode/
+.idea/
