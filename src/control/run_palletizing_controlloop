@@ -1,0 +1,285 @@
+function results = runPalletizingControlLoop(options)
+%RUNPALLETIZINGCONTROLLOOP End-to-end adaptive palletizing pipeline.
+%
+%   RESULTS = RUNPALLETIZINGCONTROLLOOP()
+%   RESULTS = RUNPALLETIZINGCONTROLLOOP('OptimizerType', 'ga', 'Visualize', true)
+%
+%   This function is the "working model" entry point for the adaptive
+%   palletizing project: it acquires box data, computes a pallet layout,
+%   validates it, plans a collision-aware pick-and-place trajectory for
+%   each box, sends the resulting motion commands through RTDEINTERFACE,
+%   and (optionally) visualizes the layout and trajectories.
+%
+%   With default options this runs end-to-end using only base MATLAB
+%   (greedy heuristic + RRT/CHOMP + mock RTDE) -- no additional toolboxes
+%   required.
+%
+%   Name-value options:
+%     Mode           (default "predefined") - "predefined" or "realtime",
+%                    forwarded to ACQUIREBOXDATA
+%     BoxSource      (default "") - CSV path for "predefined" mode
+%                    (forwarded to ACQUIREBOXDATA as 'Source')
+%     NumBoxes       (default 8) - number of boxes for "realtime" mode
+%     Seed           (default []) - RNG seed for "realtime" mode
+%
+%     PalletConfig   (default "") - path to a pallet JSON config (see
+%                    data/pallet_config.json). If empty, the repository's
+%                    default data/pallet_config.json is used.
+%
+%     OptimizerType  (default "greedy") - one of "greedy", "ga", "sa",
+%                    "milp". "ga"/"sa"/"milp" require the Global
+%                    Optimization Toolbox / Optimization Toolbox
+%                    respectively.
+%     OptimizerOptions (default struct()) - name-value pairs forwarded to
+%                    the selected optimizer function
+%
+%     RobotHome      (default []) - 1x3 [x y z] (mm) robot home position.
+%                    If empty, defaults to a point above the pallet
+%                    origin corner: [0, 0, maxHeight + 300].
+%     ApproachHeight (default 150) - mm, forwarded to
+%                    PLANPICKPLACETRAJECTORY
+%     RrtOptions     (default struct()) - forwarded to RRTPLANNER via
+%                    PLANPICKPLACETRAJECTORY
+%     ChompOptions   (default struct()) - forwarded to CHOMPSMOOTH via
+%                    PLANPICKPLACETRAJECTORY
+%
+%     RTDEMode       (default "mock") - "mock" or "urscript", forwarded
+%                    to RTDEINTERFACE
+%     RTDEHost       (default "127.0.0.1")
+%     RTDEPort       (default 30002)
+%
+%     Visualize      (default true) - if true, plot the layout and each
+%                    box's trajectory
+%     Verbose        (default true) - if true, print a summary to the
+%                    command window
+%
+%   RESULTS is a struct with fields:
+%     boxes           - table of acquired box descriptors
+%     pallet          - struct, pallet configuration used
+%     layout          - table, final pallet layout (see SHELFPACK)
+%     optimizerInfo   - struct, info returned by the layout optimizer
+%     collisionCheck  - struct with fields isValid, issues
+%     placementOrder  - Nx1 double, row indices of LAYOUT in execution order
+%     trajectories    - 1xN struct array, one per placed box, with fields
+%                        id, trajectory (Mx3), success (logical)
+%     rtdeCommandLog  - string array of commands sent via RTDEINTERFACE
+%     figures         - struct with fields layoutFig, trajectoryFigs
+%                        (graphics handles, empty if Visualize is false)
+
+arguments
+    options.Mode (1,1) string {mustBeMember(options.Mode, ["predefined","realtime"])} = "predefined"
+    options.BoxSource (1,1) string = ""
+    options.NumBoxes (1,1) double {mustBePositive, mustBeInteger} = 8
+    options.Seed = []
+
+    options.PalletConfig (1,1) string = ""
+
+    options.OptimizerType (1,1) string {mustBeMember(options.OptimizerType, ["greedy","ga","sa","milp"])} = "greedy"
+    options.OptimizerOptions struct = struct()
+
+    options.RobotHome = []
+    options.ApproachHeight (1,1) double = 150
+    options.RrtOptions struct = struct()
+    options.ChompOptions struct = struct()
+
+    options.RTDEMode (1,1) string {mustBeMember(options.RTDEMode, ["mock","urscript"])} = "mock"
+    options.RTDEHost (1,1) string = "127.0.0.1"
+    options.RTDEPort (1,1) double = 30002
+
+    options.Visualize (1,1) logical = true
+    options.Verbose (1,1) logical = true
+end
+
+% --- 1. Load pallet configuration ---
+pallet = loadPalletConfig(options.PalletConfig);
+
+% --- 2. Acquire box data ---
+acqArgs = {};
+if options.Mode == "predefined" && options.BoxSource ~= ""
+    acqArgs = [acqArgs, {'Source', options.BoxSource}];
+end
+if options.Mode == "realtime"
+    acqArgs = [acqArgs, {'NumBoxes', options.NumBoxes}];
+    if ~isempty(options.Seed)
+        acqArgs = [acqArgs, {'Seed', options.Seed}];
+    end
+end
+[boxes, acqInfo] = acquireBoxData(options.Mode, acqArgs{:});
+
+if options.Verbose
+    fprintf('Acquired %d boxes (mode: %s)\n', height(boxes), acqInfo.mode);
+end
+
+% --- 3. Layout optimization ---
+optArgs = namedArgsToCell(options.OptimizerOptions);
+switch options.OptimizerType
+    case "greedy"
+        [layout, optimizerInfo] = greedyLayoutHeuristic(boxes, pallet, optArgs{:});
+    case "ga"
+        [layout, optimizerInfo] = gaLayoutOptimizer(boxes, pallet, optArgs{:});
+    case "sa"
+        [layout, optimizerInfo] = saLayoutOptimizer(boxes, pallet, optArgs{:});
+    case "milp"
+        [layout, optimizerInfo] = milpLayoutOptimizer(boxes, pallet, optArgs{:});
+end
+
+if options.Verbose
+    fprintf('Layout optimizer: %s | utilization: %.1f%% | unplaced: %d\n', ...
+        options.OptimizerType, 100*optimizerInfo.utilization, optimizerInfo.numUnplaced);
+end
+
+% --- 4. Validate layout ---
+[isValid, issues] = checkLayoutCollisions(layout, pallet);
+collisionCheck = struct('isValid', isValid, 'issues', issues);
+
+if options.Verbose
+    if isValid
+        fprintf('Layout check: OK (no overlaps, within pallet bounds)\n');
+    else
+        fprintf('Layout check: %d issue(s) found:\n', numel(issues));
+        for k = 1:numel(issues)
+            fprintf('  - %s\n', issues{k});
+        end
+    end
+end
+
+% --- 5. Visualize layout ---
+figures = struct('layoutFig', [], 'trajectoryFigs', []);
+if options.Visualize
+    figLayout = figure('Name', 'Pallet Layout');
+    plotPalletLayout(layout, pallet, 'Axes', axes(figLayout), ...
+        'Title', sprintf('Pallet layout (%s)', options.OptimizerType));
+    figures.layoutFig = figLayout;
+end
+
+% --- 6. Trajectory planning + RTDE execution ---
+if isempty(options.RobotHome)
+    robotHome = [0, 0, pallet.maxHeight + 300];
+else
+    robotHome = options.RobotHome;
+end
+
+workspace = struct( ...
+    'min', [0, 0, 0], ...
+    'max', [pallet.length, pallet.width, pallet.maxHeight + options.ApproachHeight + 200]);
+
+% Execute lower layers first; within a layer, fill order roughly follows
+% the shelf-packing order (by y, then x).
+placedIdx = find(layout.placed);
+if ~isempty(placedIdx)
+    sortKeys = [layout.z(placedIdx), layout.y(placedIdx), layout.x(placedIdx)];
+    [~, order] = sortrows(sortKeys);
+    placementOrder = placedIdx(order);
+else
+    placementOrder = placedIdx;
+end
+
+rtde = RTDEInterface('Mode', options.RTDEMode, 'Host', options.RTDEHost, 'Port', options.RTDEPort);
+rtde.connect();
+
+trajectories = struct('id', {}, 'trajectory', {}, 'success', {});
+trajFigs = [];
+
+placedLayout = layout([], :); % grows as boxes are "placed"
+
+for k = 1:numel(placementOrder)
+    rowIdx = placementOrder(k);
+    boxRow = layout(rowIdx, :);
+
+    cx = boxRow.x + boxRow.placedLength/2;
+    cy = boxRow.y + boxRow.placedWidth/2;
+    czTop = boxRow.z + boxRow.height;
+
+    placePos = [cx, cy, czTop];
+
+    obstacles = layoutToObstacles(placedLayout, 10);
+
+    [trajectory, planInfo] = planPickPlaceTrajectory(robotHome, placePos, ...
+        obstacles, workspace, ...
+        'ApproachHeight', options.ApproachHeight, ...
+        'RrtOptions', options.RrtOptions, ...
+        'ChompOptions', options.ChompOptions);
+
+    trajectories(end+1) = struct( ... %#ok<AGROW>
+        'id', string(boxRow.id), ...
+        'trajectory', trajectory, ...
+        'success', planInfo.success);
+
+    if planInfo.success
+        orientation = [0, pi, 0];
+        for w = 1:size(trajectory,1)
+            pose = [trajectory(w,:), orientation];
+            rtde.moveLinear(pose);
+        end
+
+        if options.Visualize
+            f = figure('Name', sprintf('Trajectory: %s', boxRow.id));
+            plotTrajectory3D(trajectory, obstacles, workspace, ...
+                'Axes', axes(f), 'Title', sprintf('Pick-place path for %s', boxRow.id));
+            trajFigs = [trajFigs, f]; %#ok<AGROW>
+        end
+    elseif options.Verbose
+        fprintf('  ! Trajectory planning FAILED for box %s\n', boxRow.id);
+    end
+
+    placedLayout = [placedLayout; boxRow]; %#ok<AGROW>
+end
+
+figures.trajectoryFigs = trajFigs;
+
+if options.Verbose
+    numOk = sum(arrayfun(@(t) t.success, trajectories));
+    fprintf('Trajectory planning: %d/%d boxes succeeded\n', numOk, numel(trajectories));
+end
+
+% --- 7. Assemble results ---
+results = struct( ...
+    'boxes', boxes, ...
+    'pallet', pallet, ...
+    'layout', layout, ...
+    'optimizerInfo', optimizerInfo, ...
+    'collisionCheck', collisionCheck, ...
+    'placementOrder', placementOrder, ...
+    'trajectories', trajectories, ...
+    'rtdeCommandLog', rtde.CommandLog, ...
+    'figures', figures);
+
+rtde.disconnect();
+
+end
+
+% ------------------------------------------------------------------
+function pallet = loadPalletConfig(configPath)
+if configPath == ""
+    thisFile = mfilename('fullpath');
+    controlDir = fileparts(thisFile);
+    srcDir = fileparts(controlDir);
+    repoRoot = fileparts(srcDir);
+    configPath = fullfile(repoRoot, 'data', 'pallet_config.json');
+else
+    configPath = char(configPath);
+end
+
+if ~isfile(configPath)
+    error('runPalletizingControlLoop:PalletConfigNotFound', ...
+        'Pallet config not found: %s', configPath);
+end
+
+raw = jsondecode(fileread(configPath));
+
+pallet = struct( ...
+    'length', raw.length, ...
+    'width', raw.width, ...
+    'maxHeight', raw.maxHeight, ...
+    'maxWeight', raw.maxWeight);
+end
+
+% ------------------------------------------------------------------
+function c = namedArgsToCell(s)
+fields = fieldnames(s);
+c = cell(1, 2*numel(fields));
+for k = 1:numel(fields)
+    c{2*k-1} = fields{k};
+    c{2*k} = s.(fields{k});
+end
+end
