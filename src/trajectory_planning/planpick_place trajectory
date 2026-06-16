@@ -1,0 +1,100 @@
+function [trajectory, info] = planPickPlaceTrajectory(homePos, placePos, obstacles, workspace, options)
+%PLANPICKPLACETRAJECTORY Plan a home -> place trajectory avoiding placed boxes.
+%
+%   [TRAJECTORY, INFO] = PLANPICKPLACETRAJECTORY(HOMEPOS, PLACEPOS, OBSTACLES, WORKSPACE)
+%   [TRAJECTORY, INFO] = PLANPICKPLACETRAJECTORY(..., 'ApproachHeight', 150)
+%
+%   HOMEPOS   - 1x3 [x y z] robot "home"/staging position (mm)
+%   PLACEPOS  - 1x3 [x y z] target placement position for this box (mm) -
+%               typically the box's centroid or a point just above it
+%   OBSTACLES - struct array (min, max fields), e.g. from LAYOUTTOOBSTACLES,
+%               representing boxes already placed on the pallet
+%   WORKSPACE - struct with fields min, max (1x3 each), sampling bounds
+%               for RRTPLANNER (mm)
+%
+%   Name-value options:
+%     ApproachHeight (default 150) - mm above PLACEPOS used as an
+%         intermediate "approach" waypoint, so the planner descends onto
+%         the target rather than driving straight into it.
+%     RrtOptions   (default struct()) - struct of name-value pairs
+%         forwarded to RRTPLANNER (e.g., struct('MaxIterations', 8000))
+%     ChompOptions (default struct()) - struct of name-value pairs
+%         forwarded to CHOMPSMOOTH
+%     Smooth (default true) - if false, skip CHOMPSMOOTH and return the
+%         raw RRT path
+%
+%   TRAJECTORY - Nx3 array of waypoints from HOMEPOS to PLACEPOS
+%                (via the approach point above PLACEPOS), or a 0x3 array
+%                if planning failed.
+%   INFO - struct with fields: success (logical), rrtInfo, chompInfo,
+%          approachPos (1x3)
+%
+%   The planner first finds a collision-free RRT path from HOMEPOS to an
+%   "approach" point directly above PLACEPOS, smooths it with
+%   CHOMPSMOOTH, then appends a final straight-line descent from the
+%   approach point to PLACEPOS (kept short and close to the target, so it
+%   is checked directly for collisions rather than re-planned).
+
+arguments
+    homePos (1,3) double
+    placePos (1,3) double
+    obstacles
+    workspace struct
+    options.ApproachHeight (1,1) double = 150
+    options.RrtOptions struct = struct()
+    options.ChompOptions struct = struct()
+    options.Smooth (1,1) logical = true
+end
+
+approachPos = placePos + [0, 0, options.ApproachHeight];
+
+rrtArgs = namedArgsToCell(options.RrtOptions);
+[rawPath, rrtInfo] = rrtPlanner(homePos, approachPos, obstacles, workspace, rrtArgs{:});
+
+if ~rrtInfo.success
+    trajectory = zeros(0,3);
+    info = struct('success', false, 'rrtInfo', rrtInfo, ...
+        'chompInfo', struct(), 'approachPos', approachPos);
+    return
+end
+
+if options.Smooth
+    chompArgs = namedArgsToCell(options.ChompOptions);
+    [smoothPath, chompInfo] = chompSmooth(rawPath, obstacles, chompArgs{:});
+else
+    smoothPath = rawPath;
+    chompInfo = struct('iterations', 0, 'finalCost', 0);
+end
+
+% Final descent from the approach point straight down onto the target.
+descent = [approachPos; placePos];
+[descentFree, ~] = checkPathCollisionFree(descent, obstacles, 5);
+
+if ~descentFree
+    % Descend is blocked (shouldn't normally happen since the approach
+    % point sits above the target box's own footprint, which is excluded
+    % from OBSTACLES for the box being placed). Report failure rather
+    % than driving through an obstacle.
+    trajectory = zeros(0,3);
+    info = struct('success', false, 'rrtInfo', rrtInfo, ...
+        'chompInfo', chompInfo, 'approachPos', approachPos);
+    return
+end
+
+trajectory = [smoothPath; placePos];
+
+info = struct('success', true, 'rrtInfo', rrtInfo, ...
+    'chompInfo', chompInfo, 'approachPos', approachPos);
+
+end
+
+% ------------------------------------------------------------------
+function c = namedArgsToCell(s)
+%NAMEDARGSTOCELL Convert a struct of name-value pairs to a flat cell array.
+fields = fieldnames(s);
+c = cell(1, 2*numel(fields));
+for k = 1:numel(fields)
+    c{2*k-1} = fields{k};
+    c{2*k} = s.(fields{k});
+end
+end
