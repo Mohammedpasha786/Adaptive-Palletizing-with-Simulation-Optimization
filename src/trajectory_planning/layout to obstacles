@@ -1,0 +1,38 @@
+function obstacles = layoutToObstacles(layout, approachClearance)
+%LAYOUTTOOBSTACLES Convert placed boxes in a layout into AABB obstacles.
+%
+%   OBSTACLES = LAYOUTTOOBSTACLES(LAYOUT)
+%   OBSTACLES = LAYOUTTOOBSTACLES(LAYOUT, APPROACHCLEARANCE)
+%
+%   LAYOUT - table as returned by SHELFPACK / any layout optimizer. Only
+%            rows with LAYOUT.placed == true contribute obstacles.
+%   APPROACHCLEARANCE - (optional) mm added on all sides of each box's
+%            axis-aligned bounding box, to keep the planner from grazing
+%            box edges. Default: 0.
+%
+%   OBSTACLES is a struct array with fields min, max (1x3 each), suitable
+%   for passing to RRTPLANNER and CHECKPATHCOLLISIONFREE.
+
+arguments
+    layout table
+    approachClearance (1,1) double = 0
+end
+
+placedIdx = find(layout.placed);
+n = numel(placedIdx);
+
+obstacles = struct('min', cell(1,n), 'max', cell(1,n));
+
+for k = 1:n
+    i = placedIdx(k);
+
+    lo = [layout.x(i), layout.y(i), layout.z(i)] - approachClearance;
+    hi = [layout.x(i) + layout.placedLength(i), ...
+          layout.y(i) + layout.placedWidth(i), ...
+          layout.z(i) + layout.height(i)] + approachClearance;
+
+    obstacles(k).min = lo;
+    obstacles(k).max = hi;
+end
+
+end
