@@ -1,0 +1,61 @@
+function boxes = simulateBoxDetection(numBoxes, options)
+%SIMULATEBOXDETECTION Generate synthetic "detected" boxes for real-time mode.
+%
+%   BOXES = SIMULATEBOXDETECTION(NUMBOXES)
+%   BOXES = SIMULATEBOXDETECTION(NUMBOXES, 'LengthRange', [150 500])
+%
+%   NUMBOXES - number of boxes to generate
+%
+%   Name-value options (all ranges are [min max]):
+%     LengthRange (default [150 500]) mm
+%     WidthRange  (default [100 400]) mm
+%     HeightRange (default [100 350]) mm
+%     DensityRange (default [50 150]) kg/m^3, used to derive weight from
+%                  the box volume plus noise
+%     Seed (default []) - if provided, seeds the random number generator
+%          for reproducible output (useful in tests)
+%
+%   BOXES is a table with columns id, length, width, height, weight
+%   (mm, mm, mm, kg), in the same format expected by the layout
+%   optimizers in src/optimization.
+%
+%   This stands in for a vision system (Computer Vision Toolbox) and/or
+%   weight sensor reporting newly-arrived box attributes on a conveyor.
+%   See src/perception/PerceptionBuffer.m for accumulating these
+%   readings until enough data is available for optimization.
+
+arguments
+    numBoxes (1,1) double {mustBePositive, mustBeInteger}
+    options.LengthRange (1,2) double = [150 500]
+    options.WidthRange (1,2) double = [100 400]
+    options.HeightRange (1,2) double = [100 350]
+    options.DensityRange (1,2) double = [50 150]
+    options.Seed = []
+end
+
+if ~isempty(options.Seed)
+    rng(options.Seed);
+end
+
+L = randRange(options.LengthRange, numBoxes);
+W = randRange(options.WidthRange, numBoxes);
+H = randRange(options.HeightRange, numBoxes);
+rho = randRange(options.DensityRange, numBoxes); % kg/m^3
+
+volumeM3 = (L/1000) .* (W/1000) .* (H/1000);
+weight = rho .* volumeM3;
+
+ids = strings(numBoxes,1);
+for k = 1:numBoxes
+    ids(k) = generateBoxID();
+end
+
+boxes = table(ids, L, W, H, weight, 'VariableNames', ...
+    {'id','length','width','height','weight'});
+
+end
+
+% ------------------------------------------------------------------
+function v = randRange(range, n)
+v = range(1) + rand(n,1) * (range(2) - range(1));
+end
