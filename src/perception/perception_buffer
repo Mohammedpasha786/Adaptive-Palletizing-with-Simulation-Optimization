@@ -1,0 +1,89 @@
+classdef PerceptionBuffer < handle
+    %PERCEPTIONBUFFER Accumulate detected boxes until ready for optimization.
+    %
+    %   buf = PerceptionBuffer()
+    %   buf = PerceptionBuffer('ReadyThreshold', 8)
+    %
+    %   In real-time mode, box parameters are unknown beforehand and are
+    %   detected on the fly (e.g., from SIMULATEBOXDETECTION standing in
+    %   for a conveyor vision system). This class holds detected boxes in
+    %   a temporary "holding area" table until enough have accumulated
+    %   (ReadyThreshold) or a maximum wait time has elapsed
+    %   (MaxWaitSeconds), at which point FLUSH() returns the buffered
+    %   boxes for layout optimization and clears the buffer.
+    %
+    %   Example:
+    %       buf = PerceptionBuffer('ReadyThreshold', 5);
+    %       while true
+    %           newBox = simulateBoxDetection(1);
+    %           buf.addBox(newBox);
+    %           if buf.isReady()
+    %               batch = buf.flush();
+    %               layout = greedyLayoutHeuristic(batch, pallet);
+    %               break
+    %           end
+    %       end
+
+    properties
+        ReadyThreshold (1,1) double = 5
+        MaxWaitSeconds (1,1) double = Inf
+    end
+
+    properties (SetAccess = private)
+        Boxes table = table('Size', [0 5], ...
+            'VariableTypes', {'string','double','double','double','double'}, ...
+            'VariableNames', {'id','length','width','height','weight'})
+        FirstAddTime datetime = datetime.empty
+    end
+
+    methods
+        function obj = PerceptionBuffer(options)
+            arguments
+                options.ReadyThreshold (1,1) double {mustBePositive} = 5
+                options.MaxWaitSeconds (1,1) double {mustBePositive} = Inf
+            end
+            obj.ReadyThreshold = options.ReadyThreshold;
+            obj.MaxWaitSeconds = options.MaxWaitSeconds;
+        end
+
+        function addBox(obj, boxRow)
+            %ADDBOX Append one or more box rows (table) to the buffer.
+            arguments
+                obj
+                boxRow table
+            end
+
+            if isempty(obj.Boxes) && isempty(obj.FirstAddTime)
+                obj.FirstAddTime = datetime('now');
+            end
+
+            obj.Boxes = [obj.Boxes; boxRow];
+        end
+
+        function tf = isReady(obj)
+            %ISREADY True if the buffer has enough boxes, or has waited
+            %too long, to trigger optimization.
+            countReady = height(obj.Boxes) >= obj.ReadyThreshold;
+
+            timeReady = false;
+            if ~isempty(obj.FirstAddTime) && isfinite(obj.MaxWaitSeconds)
+                elapsed = seconds(datetime('now') - obj.FirstAddTime);
+                timeReady = elapsed >= obj.MaxWaitSeconds;
+            end
+
+            tf = countReady || timeReady;
+        end
+
+        function batch = flush(obj)
+            %FLUSH Return the buffered boxes and clear the buffer.
+            batch = obj.Boxes;
+            obj.Boxes = obj.Boxes([], :);
+            obj.FirstAddTime = datetime.empty;
+        end
+
+        function n = count(obj)
+            %COUNT Number of boxes currently buffered.
+            n = height(obj.Boxes);
+        end
+    end
+end
