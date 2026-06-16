@@ -1,0 +1,164 @@
+function [smoothPath, info] = chompSmooth(path, obstacles, options)
+%CHOMPSMOOTH Gradient-based smoothing of an RRT path (CHOMP-inspired).
+%
+%   [SMOOTHPATH, INFO] = CHOMPSMOOTH(PATH, OBSTACLES)
+%   [SMOOTHPATH, INFO] = CHOMPSMOOTH(..., 'NumWaypoints', 20)
+%
+%   PATH      - Mx3 array of waypoints (mm), e.g. from RRTPLANNER. The
+%               first and last rows (start/goal) are held fixed.
+%   OBSTACLES - struct array with fields min, max (1x3 each), same format
+%               as RRTPLANNER. Pass [] / struct([]) for no obstacles.
+%
+%   Name-value options:
+%     NumWaypoints   (default 20) - the path is first resampled to this
+%                    many evenly-spaced waypoints before smoothing.
+%     Iterations     (default 100)
+%     SmoothnessGain (default 0.3) - step size for the smoothness
+%                    (minimize acceleration) gradient term, in [0, 1]
+%     ObstacleGain   (default 5.0) - weight on the obstacle repulsion term
+%     SafetyMargin   (default 25)  - mm, extra clearance added around each
+%                    obstacle when computing the repulsion gradient
+%
+%   This is a simplified, CPU-light approximation of CHOMP
+%   (Covariant Hamiltonian Optimization for Motion Planning): each
+%   interior waypoint is iteratively nudged to (a) lie closer to the
+%   midpoint of its neighbors (smoothness) and (b) move away from nearby
+%   obstacles (obstacle cost gradient via numerical finite differences).
+%
+%   SMOOTHPATH - NumWaypoints x 3 smoothed path (start/goal preserved)
+%   INFO       - struct with fields: iterations, finalCost
+
+arguments
+    path (:,3) double
+    obstacles
+    options.NumWaypoints (1,1) double = 20
+    options.Iterations (1,1) double = 100
+    options.SmoothnessGain (1,1) double = 0.3
+    options.ObstacleGain (1,1) double = 5.0
+    options.SafetyMargin (1,1) double = 25
+end
+
+if isempty(obstacles)
+    obstacles = struct('min', {}, 'max', {});
+end
+
+if size(path,1) < 2
+    smoothPath = path;
+    info = struct('iterations', 0, 'finalCost', 0);
+    return
+end
+
+% Resample the input path to a fixed number of evenly-spaced waypoints
+% using piecewise-linear arc-length interpolation.
+resampled = resamplePath(path, options.NumWaypoints);
+
+n = size(resampled, 1);
+finalCost = 0;
+
+for iter = 1:options.Iterations
+    updated = resampled;
+
+    for i = 2:n-1
+        prevPt = resampled(i-1, :);
+        nextPt = resampled(i+1, :);
+        curPt  = resampled(i, :);
+
+        % Smoothness term: pull toward the midpoint of neighbors.
+        midpoint = (prevPt + nextPt) / 2;
+        smoothStep = options.SmoothnessGain * (midpoint - curPt);
+
+        % Obstacle term: push away from the nearest obstacle surface,
+        % via a numerical gradient of a simple penetration-depth cost.
+        gradCost = obstacleCostGradient(curPt, obstacles, options.SafetyMargin);
+        obstacleStep = -options.ObstacleGain * gradCost;
+
+        updated(i, :) = curPt + smoothStep + obstacleStep;
+    end
+
+    resampled = updated;
+    finalCost = pathCost(resampled, obstacles, options.SafetyMargin);
+end
+
+smoothPath = resampled;
+info = struct('iterations', options.Iterations, 'finalCost', finalCost);
+
+end
+
+% ------------------------------------------------------------------
+function resampled = resamplePath(path, numWaypoints)
+% Resample PATH to NUMWAYPOINTS evenly-spaced points by arc length.
+segLengths = sqrt(sum(diff(path,1,1).^2, 2));
+cumLen = [0; cumsum(segLengths)];
+totalLen = cumLen(end);
+
+if totalLen < 1e-9
+    resampled = repmat(path(1,:), numWaypoints, 1);
+    return
+end
+
+targets = linspace(0, totalLen, numWaypoints);
+resampled = zeros(numWaypoints, 3);
+
+for k = 1:numWaypoints
+    t = targets(k);
+    segIdx = find(cumLen <= t, 1, 'last');
+    segIdx = min(segIdx, size(path,1)-1);
+    segStart = cumLen(segIdx);
+    segLen = cumLen(segIdx+1) - segStart;
+    if segLen < 1e-9
+        frac = 0;
+    else
+        frac = (t - segStart) / segLen;
+    end
+    resampled(k, :) = path(segIdx, :) + frac * (path(segIdx+1, :) - path(segIdx, :));
+end
+end
+
+% ------------------------------------------------------------------
+function c = penetrationDepth(p, obstacles, margin)
+% Sum of penetration depths of point P into each (expanded) obstacle.
+% Zero if P is outside all expanded obstacles.
+c = 0;
+for k = 1:numel(obstacles)
+    lo = obstacles(k).min - margin;
+    hi = obstacles(k).max + margin;
+    if all(p >= lo) && all(p <= hi)
+        % Penetration depth = distance to the nearest face of the
+        % expanded box (how far "inside" the point is).
+        d = min([p - lo, hi - p]);
+        c = c + max(d, 0);
+    end
+end
+end
+
+% ------------------------------------------------------------------
+function g = obstacleCostGradient(p, obstacles, margin)
+% Numerical gradient of PENETRATIONDEPTH at point P.
+h = 1e-3;
+g = zeros(1,3);
+for dim = 1:3
+    pPlus = p; pPlus(dim) = pPlus(dim) + h;
+    pMinus = p; pMinus(dim) = pMinus(dim) - h;
+    g(dim) = (penetrationDepth(pPlus, obstacles, margin) - ...
+              penetrationDepth(pMinus, obstacles, margin)) / (2*h);
+end
+end
+
+% ------------------------------------------------------------------
+function c = pathCost(path, obstacles, margin)
+% Total cost: smoothness (sum of squared second differences) plus
+% summed obstacle penetration along the path.
+n = size(path,1);
+smoothness = 0;
+for i = 2:n-1
+    accel = path(i+1,:) - 2*path(i,:) + path(i-1,:);
+    smoothness = smoothness + sum(accel.^2);
+end
+
+obstacleCost = 0;
+for i = 1:n
+    obstacleCost = obstacleCost + penetrationDepth(path(i,:), obstacles, margin);
+end
+
+c = smoothness + 10 * obstacleCost;
+end
