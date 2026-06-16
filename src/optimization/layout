@@ -1,0 +1,43 @@
+function [cost, info] = layoutObjective(layout, pallet, unplacedPenalty)
+%LAYOUTOBJECTIVE Scalar cost for a candidate pallet layout (lower = better).
+%
+%   [COST, INFO] = LAYOUTOBJECTIVE(LAYOUT, PALLET, UNPLACEDPENALTY)
+%
+%   LAYOUT           - table as returned by SHELFPACK
+%   PALLET           - struct with fields length, width (mm)
+%   UNPLACEDPENALTY  - (optional) cost added per box that could not be
+%                       placed. Default: 2
+%
+%   COST = -utilization + UNPLACEDPENALTY * numUnplaced
+%   where utilization = (used footprint area) / (pallet footprint area),
+%   so a perfectly packed pallet with no unplaced boxes has COST = -1,
+%   and an empty/failed layout has COST close to 0 (or positive if any
+%   boxes are unplaced).
+%
+%   INFO is a struct with fields: utilization, usedArea, palletArea,
+%   numUnplaced, numBoxes.
+
+arguments
+    layout table
+    pallet struct
+    unplacedPenalty (1,1) double = 2
+end
+
+palletArea = pallet.length * pallet.width;
+
+placedMask = layout.placed;
+usedArea = sum(layout.placedLength(placedMask) .* layout.placedWidth(placedMask));
+
+numUnplaced = sum(~placedMask);
+utilization = usedArea / palletArea;
+
+cost = -utilization + unplacedPenalty * numUnplaced;
+
+info = struct( ...
+    'utilization', utilization, ...
+    'usedArea', usedArea, ...
+    'palletArea', palletArea, ...
+    'numUnplaced', numUnplaced, ...
+    'numBoxes', height(layout));
+
+end
