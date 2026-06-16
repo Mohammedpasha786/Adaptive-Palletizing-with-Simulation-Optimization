@@ -1,0 +1,99 @@
+function layout = shelfPack(boxes, order, rotated, pallet, zOffset)
+%SHELFPACK Place boxes onto a single pallet layer using shelf (next-fit) packing.
+%
+%   LAYOUT = SHELFPACK(BOXES, ORDER, ROTATED, PALLET, ZOFFSET)
+%
+%   BOXES    - table with one row per box and columns:
+%                id, length, width, height, weight  (mm, mm, mm, kg)
+%   ORDER    - 1xN permutation of 1:height(BOXES) giving the placement order
+%   ROTATED  - Nx1 (or 1xN) logical vector, indexed by original box row.
+%              true  => footprint uses [width x length] (90 deg rotation)
+%              false => footprint uses [length x width]
+%   PALLET   - struct with fields length, width (mm) describing the
+%              usable footprint of this layer
+%   ZOFFSET  - (optional) z-position of the bottom of this layer, mm.
+%              Default: 0
+%
+%   LAYOUT is a table with the same row order as BOXES, containing:
+%     id, length, width, height, weight, placedLength, placedWidth,
+%     x, y, z, rotated, placed
+%
+%   Boxes that do not fit on the pallet footprint (too large in either
+%   dimension, or no remaining shelf space) are returned with
+%   placed = false and x = y = z = NaN.
+%
+%   Algorithm: classic shelf / next-fit-decreasing-height packing. Boxes
+%   are placed left-to-right along the pallet "length" (x) axis. When a
+%   box would exceed the remaining x-extent, a new shelf is started above
+%   the tallest (in y) box of the current shelf.
+
+arguments
+    boxes table
+    order (1,:) double
+    rotated (:,1) logical
+    pallet struct
+    zOffset (1,1) double = 0
+end
+
+n = height(boxes);
+
+x = nan(n,1);
+y = nan(n,1);
+z = nan(n,1);
+placedLength = nan(n,1);
+placedWidth  = nan(n,1);
+placed = false(n,1);
+
+shelfY = 0;
+shelfHeight = 0;
+cursorX = 0;
+
+for k = 1:numel(order)
+    idx = order(k);
+
+    if rotated(idx)
+        L = boxes.width(idx);
+        W = boxes.length(idx);
+    else
+        L = boxes.length(idx);
+        W = boxes.width(idx);
+    end
+
+    % Box footprint cannot fit on the pallet at all, in either axis.
+    if L > pallet.length || W > pallet.width
+        continue
+    end
+
+    % Start a new shelf if this box would overflow the current row.
+    if cursorX + L > pallet.length
+        shelfY = shelfY + shelfHeight;
+        shelfHeight = 0;
+        cursorX = 0;
+    end
+
+    % No vertical room left for a new shelf on this layer.
+    if shelfY + W > pallet.width
+        continue
+    end
+
+    x(idx) = cursorX;
+    y(idx) = shelfY;
+    z(idx) = zOffset;
+    placedLength(idx) = L;
+    placedWidth(idx)  = W;
+    placed(idx) = true;
+
+    cursorX = cursorX + L;
+    shelfHeight = max(shelfHeight, W);
+end
+
+layout = boxes(:, {'id','length','width','height','weight'});
+layout.placedLength = placedLength;
+layout.placedWidth  = placedWidth;
+layout.x = x;
+layout.y = y;
+layout.z = z;
+layout.rotated = rotated(:);
+layout.placed = placed;
+
+end
