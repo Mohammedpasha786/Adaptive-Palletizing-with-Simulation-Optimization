@@ -1,0 +1,26 @@
+%   Usage:
+%       cd <repo root>
+%       run scripts/run_all_tests.m
+
+clear; clc;
+
+repoRoot = fileparts(fileparts(mfilename('fullpath')));
+addpath(genpath(fullfile(repoRoot, 'src')));
+addpath(genpath(fullfile(repoRoot, 'data')));
+
+fprintf('Running all tests in tests/ ...\n\n');
+testSuiteResults = runtests(fullfile(repoRoot, 'tests'));
+
+fprintf('\n--- Test results ---\n');
+disp(table(testSuiteResults));
+
+numPassed = sum([testSuiteResults.Passed]);
+numFailed = sum([testSuiteResults.Failed]);
+numTotal  = numel(testSuiteResults);
+
+fprintf('\nPassed: %d / %d', numPassed, numTotal);
+if numFailed > 0
+    fprintf('   FAILED: %d\n', numFailed);
+else
+    fprintf('   All tests passed.\n');
+end
