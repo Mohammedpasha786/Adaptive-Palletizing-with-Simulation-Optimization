@@ -1,0 +1,62 @@
+%   Loads the sample 10-box predefined dataset, runs the greedy layout
+%   optimizer, validates the layout, plans trajectories for each box using
+%   RRT + CHOMP, and produces two 3-D figures:
+%     1. The final pallet layout
+%     2. The pick-and-place trajectory for the first successfully planned box
+%
+%   No additional MATLAB toolboxes are required.
+%
+%   Usage:
+%       cd <repo root>
+%       run scripts/run_demo.m
+
+clear; clc; close all;
+
+%% --- 0. Set up path ---
+repoRoot = fileparts(fileparts(mfilename('fullpath')));
+addpath(genpath(fullfile(repoRoot, 'src')));
+addpath(genpath(fullfile(repoRoot, 'data')));
+
+fprintf('=== Adaptive Palletizing Demo ===\n\n');
+
+%% --- 1. Run the pipeline ---
+results = runPalletizingControlLoop( ...
+    'Mode',          'predefined', ...
+    'OptimizerType', 'greedy', ...
+    'RTDEMode',      'mock', ...
+    'Visualize',     true, ...
+    'Verbose',       true);
+
+%% --- 2. Print layout summary ---
+fprintf('\n--- Layout summary ---\n');
+disp(results.layout(:, {'id','length','width','height','x','y','z','placed'}));
+
+%% --- 3. Print optimizer info ---
+fprintf('\n--- Optimizer info ---\n');
+fprintf('  Utilisation : %.1f%%\n', 100 * results.optimizerInfo.utilization);
+fprintf('  Placed      : %d / %d boxes\n', ...
+    sum(results.layout.placed), height(results.layout));
+fprintf('  Unplaced    : %d\n', results.optimizerInfo.numUnplaced);
+
+%% --- 4. Print collision check result ---
+fprintf('\n--- Collision check ---\n');
+if results.collisionCheck.isValid
+    fprintf('  OK — no overlaps, all boxes within pallet bounds.\n');
+else
+    fprintf('  ISSUES:\n');
+    for k = 1:numel(results.collisionCheck.issues)
+        fprintf('    %s\n', results.collisionCheck.issues{k});
+    end
+end
+
+%% --- 5. Print RTDE command log excerpt ---
+fprintf('\n--- RTDE command log (first 5 commands) ---\n');
+nShow = min(5, numel(results.rtdeCommandLog));
+for k = 1:nShow
+    fprintf('  %s', results.rtdeCommandLog(k));
+end
+if numel(results.rtdeCommandLog) > 5
+    fprintf('  ... (%d more commands)\n', numel(results.rtdeCommandLog) - 5);
+end
+
+fprintf('\nDemo complete.\n');
