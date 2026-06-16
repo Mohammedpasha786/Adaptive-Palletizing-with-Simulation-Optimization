@@ -1,0 +1,50 @@
+function [isFree, firstCollisionIdx] = checkPathCollisionFree(path, obstacles, numSamples)
+%CHECKPATHCOLLISIONFREE Check whether a path avoids all box obstacles.
+%
+%   [ISFREE, FIRSTCOLLISIONIDX] = CHECKPATHCOLLISIONFREE(PATH, OBSTACLES)
+%   [ISFREE, FIRSTCOLLISIONIDX] = CHECKPATHCOLLISIONFREE(PATH, OBSTACLES, NUMSAMPLES)
+%
+%   PATH       - Mx3 array of waypoints (mm)
+%   OBSTACLES  - struct array with fields min, max (1x3 each), axis-aligned
+%                bounding boxes (mm). Pass [] / struct([]) for none.
+%   NUMSAMPLES - (optional) number of interpolation points checked along
+%                each segment between consecutive waypoints. Default: 10.
+%
+%   ISFREE            - true if no sampled point along the path lies
+%                        inside any obstacle.
+%   FIRSTCOLLISIONIDX - index of the first path segment (1 = between
+%                        PATH(1,:) and PATH(2,:)) where a collision was
+%                        found, or 0 if ISFREE is true.
+
+arguments
+    path (:,3) double
+    obstacles
+    numSamples (1,1) double = 10
+end
+
+if isempty(obstacles)
+    obstacles = struct('min', {}, 'max', {});
+end
+
+isFree = true;
+firstCollisionIdx = 0;
+
+for seg = 1:size(path,1)-1
+    p1 = path(seg, :);
+    p2 = path(seg+1, :);
+
+    for s = 0:numSamples
+        t = s / numSamples;
+        p = p1 + t * (p2 - p1);
+
+        for k = 1:numel(obstacles)
+            if all(p >= obstacles(k).min) && all(p <= obstacles(k).max)
+                isFree = false;
+                firstCollisionIdx = seg;
+                return
+            end
+        end
+    end
+end
+
+end
