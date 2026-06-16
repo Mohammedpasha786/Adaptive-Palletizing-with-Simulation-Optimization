@@ -1,0 +1,226 @@
+function [layout, info] = milpLayoutOptimizer(boxes, pallet, options)
+%MILPLAYOUTOPTIMIZER MILP-based layer assignment + shelf packing.
+%
+%   [LAYOUT, INFO] = MILPLAYOUTOPTIMIZER(BOXES, PALLET)
+%   [LAYOUT, INFO] = MILPLAYOUTOPTIMIZER(BOXES, PALLET, 'MaxLayers', 4)
+%
+%   BOXES   - table with columns id, length, width, height, weight
+%   PALLET  - struct with fields length, width, maxHeight (mm) and
+%             optionally maxWeight (kg)
+%
+%   Name-value options:
+%     MaxLayers       (default height(BOXES)) - upper bound on the
+%                     number of stacking layers considered. Keep this
+%                     small (e.g., <= 8-10) for reasonable solve times,
+%                     since the problem has MaxLayers * N binary
+%                     variables.
+%     UnplacedPenalty (default 2) - see LAYOUTOBJECTIVE
+%     Display         (default "off") - passed to optimoptions
+%
+%   APPROACH
+%   This function solves a small mixed-integer linear program that
+%   assigns each box to exactly one stacking layer l = 1..L, minimizing
+%   the total stack height sum(h_l), subject to:
+%     - each box assigned to exactly one layer
+%     - h_l >= height_i for every box i assigned to layer l
+%     - the total footprint area of boxes assigned to layer l does not
+%       exceed the pallet footprint area (an approximate 2D feasibility
+%       check; SHELFPACK performs the real 2D placement afterwards)
+%     - (optional) total weight of boxes assigned to layer l does not
+%       exceed PALLET.maxWeight
+%     - sum(h_l) <= PALLET.maxHeight
+%
+%   After solving, SHELFPACK is used independently within each layer
+%   (boxes sorted by footprint area, largest first) to compute final
+%   (x, y) positions. The z-offset of layer l is the cumulative height
+%   of layers 1..l-1.
+%
+%   Requires the Optimization Toolbox (intlinprog). If the toolbox is
+%   not available, this function rethrows MATLAB's error with a pointer
+%   to GREEDYLAYOUTHEURISTIC as a fallback.
+%
+%   LAYOUT - table as returned by SHELFPACK (combined across layers)
+%   INFO   - struct with fields cost, utilization, numUnplaced, layerOf
+%            (Nx1 layer index per box, 0 if box could not be assigned),
+%            layerHeights, output (intlinprog's output struct)
+
+arguments
+    boxes table
+    pallet struct
+    options.MaxLayers (1,1) double = height(boxes)
+    options.UnplacedPenalty (1,1) double = 2
+    options.Display (1,1) string = "off"
+end
+
+n = height(boxes);
+L = max(1, min(options.MaxLayers, n));
+
+palletArea = pallet.length * pallet.width;
+footprintArea = boxes.length .* boxes.width;
+heightCol = boxes.height;
+
+% --- Decision variables ---
+% y(i,l) for i = 1..n, l = 1..L  -> binary, index = (i-1)*L + l
+% h(l)   for l = 1..L            -> continuous, index = n*L + l
+nY = n*L;
+nVars = nY + L;
+
+idxY = @(i,l) (i-1)*L + l;
+
+f = zeros(nVars,1);
+f(nY+1:end) = 1; % minimize sum(h_l)
+
+intcon = 1:nY;
+
+lb = zeros(nVars,1);
+ub = [ones(nY,1); repmat(pallet.maxHeight, L, 1)];
+
+% --- Equality constraints: each box assigned to exactly one layer ---
+Aeq = zeros(n, nVars);
+beq = ones(n, 1);
+for i = 1:n
+    for l = 1:L
+        Aeq(i, idxY(i,l)) = 1;
+    end
+end
+
+% --- Inequality constraints ---
+rows = {};
+rhs = {};
+
+% h_l - height_i * y(i,l) >= 0  =>  height_i * y(i,l) - h_l <= 0
+for l = 1:L
+    for i = 1:n
+        r = zeros(1, nVars);
+        r(idxY(i,l)) = heightCol(i);
+        r(nY+l) = -1;
+        rows{end+1} = r; %#ok<AGROW>
+        rhs{end+1} = 0;  %#ok<AGROW>
+    end
+end
+
+% Footprint-area capacity per layer
+for l = 1:L
+    r = zeros(1, nVars);
+    for i = 1:n
+        r(idxY(i,l)) = footprintArea(i);
+    end
+    rows{end+1} = r;          %#ok<AGROW>
+    rhs{end+1} = palletArea;  %#ok<AGROW>
+end
+
+% Optional weight capacity per layer
+if isfield(pallet, 'maxWeight') && ~isempty(pallet.maxWeight) && isfinite(pallet.maxWeight)
+    for l = 1:L
+        r = zeros(1, nVars);
+        for i = 1:n
+            r(idxY(i,l)) = boxes.weight(i);
+        end
+        rows{end+1} = r;             %#ok<AGROW>
+        rhs{end+1} = pallet.maxWeight; %#ok<AGROW>
+    end
+end
+
+% Total stack height capacity
+rTotalHeight = zeros(1, nVars);
+rTotalHeight(nY+1:end) = 1;
+rows{end+1} = rTotalHeight;
+rhs{end+1} = pallet.maxHeight;
+
+A = vertcat(rows{:});
+b = vertcat(rhs{:});
+
+% --- Solve ---
+try
+    ilpOpts = optimoptions('intlinprog', 'Display', char(options.Display));
+    [xSol, fval, exitFlag, output] = intlinprog(f, intcon, A, b, Aeq, beq, lb, ub, ilpOpts);
+catch ME
+    if strcmp(ME.identifier, 'MATLAB:UndefinedFunction')
+        error('milpLayoutOptimizer:ToolboxMissing', ...
+            ['intlinprog() requires the Optimization Toolbox, which ' ...
+             'does not appear to be installed. Use ' ...
+             'GREEDYLAYOUTHEURISTIC for an optimizer that needs no ' ...
+             'additional toolboxes.']);
+    end
+    rethrow(ME);
+end
+
+if isempty(xSol)
+    % Infeasible (e.g., total height of all boxes exceeds maxHeight, or
+    % no combination of layers satisfies the area constraint). Fall back
+    % to an all-unplaced layout with the same structure as SHELFPACK.
+    layout = boxes(:, {'id','length','width','height','weight'});
+    layout.placedLength = nan(n,1);
+    layout.placedWidth  = nan(n,1);
+    layout.x = nan(n,1);
+    layout.y = nan(n,1);
+    layout.z = nan(n,1);
+    layout.rotated = false(n,1);
+    layout.placed = false(n,1);
+
+    [~, layoutInfo] = layoutObjective(layout, pallet, options.UnplacedPenalty);
+    info = struct('cost', layoutInfo.cost, 'utilization', 0, ...
+        'numUnplaced', n, 'layerOf', zeros(n,1), 'layerHeights', zeros(L,1), ...
+        'output', output, 'exitFlag', exitFlag); %#ok<STRNU>
+    info = rmfield(info, 'cost');
+    info.cost = -layoutInfo.utilization + options.UnplacedPenalty * n;
+    return
+end
+
+yVals = round(reshape(xSol(1:nY), L, n)'); % n x L, yVals(i,l)
+hVals = xSol(nY+1:end);
+
+layerOf = zeros(n,1);
+for i = 1:n
+    [~, l] = max(yVals(i,:));
+    layerOf(i) = l;
+end
+
+% Cumulative z-offset per layer based on solved layer heights.
+zOffsets = zeros(L,1);
+for l = 2:L
+    zOffsets(l) = zOffsets(l-1) + hVals(l-1);
+end
+
+layout = boxes(:, {'id','length','width','height','weight'});
+layout.placedLength = nan(n,1);
+layout.placedWidth  = nan(n,1);
+layout.x = nan(n,1);
+layout.y = nan(n,1);
+layout.z = nan(n,1);
+layout.rotated = false(n,1);
+layout.placed = false(n,1);
+
+for l = 1:L
+    members = find(layerOf == l);
+    if isempty(members)
+        continue
+    end
+
+    layerBoxes = boxes(members, :);
+    [~, areaOrder] = sort(layerBoxes.length .* layerBoxes.width, 'descend');
+    rotatedFlags = false(numel(members), 1);
+
+    subLayout = shelfPack(layerBoxes, areaOrder, rotatedFlags, pallet, zOffsets(l));
+
+    layout.placedLength(members) = subLayout.placedLength;
+    layout.placedWidth(members)  = subLayout.placedWidth;
+    layout.x(members) = subLayout.x;
+    layout.y(members) = subLayout.y;
+    layout.z(members) = subLayout.z;
+    layout.rotated(members) = subLayout.rotated;
+    layout.placed(members) = subLayout.placed;
+end
+
+[~, layoutInfo] = layoutObjective(layout, pallet, options.UnplacedPenalty);
+
+info = struct( ...
+    'cost', fval, ...
+    'utilization', layoutInfo.utilization, ...
+    'numUnplaced', layoutInfo.numUnplaced, ...
+    'layerOf', layerOf, ...
+    'layerHeights', hVals, ...
+    'exitFlag', exitFlag, ...
+    'output', output);
+
+end
