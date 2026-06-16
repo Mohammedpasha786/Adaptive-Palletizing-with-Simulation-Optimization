@@ -1,0 +1,53 @@
+name: MATLAB CI
+
+# Runs the MATLAB unit test suite (tests/) against the source code in src/
+# on every push and pull request targeting main or develop.
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up MATLAB
+        uses: matlab-actions/setup-matlab@v2
+        with:
+          products: >
+            Simulink
+            Simulink_3D_Animation
+            Robotics_System_Toolbox
+            Optimization_Toolbox
+            Global_Optimization_Toolbox
+            Computer_Vision_Toolbox
+
+      - name: Run MATLAB unit tests
+        uses: matlab-actions/run-tests@v2
+        with:
+          source-folder: src
+          select-by-folder: tests
+          test-results-junit: test-results/results.xml
+          code-coverage-cobertura: code-coverage/coverage.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matlab-test-results
+          path: test-results/
+          if-no-files-found: ignore
+
+      - name: Upload code coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matlab-code-coverage
+          path: code-coverage/
+          if-no-files-found: ignore
