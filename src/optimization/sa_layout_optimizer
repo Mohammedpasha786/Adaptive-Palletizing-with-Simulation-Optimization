@@ -1,0 +1,85 @@
+function [layout, info] = saLayoutOptimizer(boxes, pallet, options)
+%SALAYOUTOPTIMIZER Simulated-annealing-based pallet layout optimization.
+%
+%   [LAYOUT, INFO] = SALAYOUTOPTIMIZER(BOXES, PALLET)
+%   [LAYOUT, INFO] = SALAYOUTOPTIMIZER(BOXES, PALLET, 'MaxIterations', 3000)
+%
+%   BOXES   - table with columns id, length, width, height, weight
+%   PALLET  - struct with fields length, width (mm)
+%
+%   Name-value options:
+%     MaxIterations   (default 2000)
+%     UnplacedPenalty (default 2)   - see LAYOUTOBJECTIVE
+%     Display         (default "off") - passed to optimoptions
+%     InitialPoint    (default [], i.e. random) - 1x(2*N) starting vector
+%
+%   Requires the Global Optimization Toolbox (simulannealbnd). If the
+%   toolbox is not available, this function rethrows MATLAB's error with
+%   a pointer to GREEDYLAYOUTHEURISTIC as a fallback.
+%
+%   Uses the same chromosome encoding as GALAYOUTOPTIMIZER: a
+%   1x(2*N) vector in [0,1]^(2N), decoded by DECODECHROMOSOME into a
+%   placement order and rotation choices, then evaluated with
+%   LAYOUTOBJECTIVE via SHELFPACK.
+%
+%   LAYOUT - table as returned by SHELFPACK for the best vector found
+%   INFO   - struct with fields cost, utilization, numUnplaced, x (best
+%            vector), output (simulannealbnd's output struct)
+
+arguments
+    boxes table
+    pallet struct
+    options.MaxIterations (1,1) double = 2000
+    options.UnplacedPenalty (1,1) double = 2
+    options.Display (1,1) string = "off"
+    options.InitialPoint (1,:) double = []
+end
+
+n = height(boxes);
+nvars = 2*n;
+
+lb = zeros(1, nvars);
+ub = ones(1, nvars);
+
+if isempty(options.InitialPoint)
+    x0 = rand(1, nvars);
+else
+    if numel(options.InitialPoint) ~= nvars
+        error('saLayoutOptimizer:InvalidInitialPoint', ...
+            'InitialPoint must have %d elements (2 * number of boxes).', nvars);
+    end
+    x0 = options.InitialPoint;
+end
+
+objectiveFcn = @(x) layoutObjective( ...
+    decodeChromosome(x, boxes, pallet), pallet, options.UnplacedPenalty);
+
+try
+    saOpts = optimoptions('simulannealbnd', ...
+        'MaxIterations', options.MaxIterations, ...
+        'Display', char(options.Display));
+
+    [xBest, fval, exitFlag, output] = simulannealbnd(objectiveFcn, x0, lb, ub, saOpts);
+catch ME
+    if strcmp(ME.identifier, 'MATLAB:UndefinedFunction')
+        error('saLayoutOptimizer:ToolboxMissing', ...
+            ['simulannealbnd() requires the Global Optimization Toolbox, ' ...
+             'which does not appear to be installed. Use ' ...
+             'GREEDYLAYOUTHEURISTIC for an optimizer that needs no ' ...
+             'additional toolboxes.']);
+    end
+    rethrow(ME);
+end
+
+layout = decodeChromosome(xBest, boxes, pallet);
+[~, layoutInfo] = layoutObjective(layout, pallet, options.UnplacedPenalty);
+
+info = struct( ...
+    'cost', fval, ...
+    'utilization', layoutInfo.utilization, ...
+    'numUnplaced', layoutInfo.numUnplaced, ...
+    'x', xBest, ...
+    'exitFlag', exitFlag, ...
+    'output', output);
+
+end
