@@ -1,0 +1,83 @@
+function [isValid, issues] = checkLayoutCollisions(layout, pallet)
+%CHECKLAYOUTCOLLISIONS Verify a layout has no overlapping boxes and fits.
+%
+%   [ISVALID, ISSUES] = CHECKLAYOUTCOLLISIONS(LAYOUT, PALLET)
+%
+%   LAYOUT - table as returned by SHELFPACK / any layout optimizer
+%   PALLET - struct with fields length, width (mm) and optionally
+%            maxHeight (mm)
+%
+%   ISVALID - true if every placed box fits within the pallet footprint
+%             (and height, if PALLET.maxHeight is provided) and no two
+%             placed boxes' 2D footprints overlap.
+%   ISSUES  - cell array of human-readable strings describing each
+%             problem found (empty if ISVALID is true).
+%
+%   Only rows with LAYOUT.placed == true are checked; unplaced boxes are
+%   ignored (they are expected to have NaN positions).
+
+arguments
+    layout table
+    pallet struct
+end
+
+issues = {};
+
+placedIdx = find(layout.placed);
+nPlaced = numel(placedIdx);
+
+% --- Bounds checking ---
+for k = 1:nPlaced
+    i = placedIdx(k);
+    x1 = layout.x(i);
+    y1 = layout.y(i);
+    x2 = x1 + layout.placedLength(i);
+    y2 = y1 + layout.placedWidth(i);
+
+    if x1 < 0 || y1 < 0 || x2 > pallet.length || y2 > pallet.width
+        issues{end+1} = sprintf( ...
+            'Box "%s" footprint [%.1f, %.1f] x [%.1f, %.1f] exceeds pallet bounds [0, %.1f] x [0, %.1f].', ...
+            string(layout.id(i)), x1, x2, y1, y2, pallet.length, pallet.width); %#ok<AGROW>
+    end
+
+    if isfield(pallet, 'maxHeight') && ~isempty(pallet.maxHeight)
+        zTop = layout.z(i) + layout.height(i);
+        if zTop > pallet.maxHeight
+            issues{end+1} = sprintf( ...
+                'Box "%s" top surface z=%.1f exceeds pallet max height %.1f.', ...
+                string(layout.id(i)), zTop, pallet.maxHeight); %#ok<AGROW>
+        end
+    end
+end
+
+% --- Pairwise overlap checking (2D footprint, same-layer only) ---
+for a = 1:nPlaced
+    for b = a+1:nPlaced
+        i = placedIdx(a);
+        j = placedIdx(b);
+
+        % Only boxes on the same layer (same z) can collide in 2D.
+        if abs(layout.z(i) - layout.z(j)) > 1e-6
+            continue
+        end
+
+        ix1 = layout.x(i); ix2 = ix1 + layout.placedLength(i);
+        iy1 = layout.y(i); iy2 = iy1 + layout.placedWidth(i);
+
+        jx1 = layout.x(j); jx2 = jx1 + layout.placedLength(j);
+        jy1 = layout.y(j); jy2 = jy1 + layout.placedWidth(j);
+
+        overlapX = (ix1 < jx2) && (jx1 < ix2);
+        overlapY = (iy1 < jy2) && (jy1 < iy2);
+
+        if overlapX && overlapY
+            issues{end+1} = sprintf( ...
+                'Boxes "%s" and "%s" overlap on layer z=%.1f.', ...
+                string(layout.id(i)), string(layout.id(j)), layout.z(i)); %#ok<AGROW>
+        end
+    end
+end
+
+isValid = isempty(issues);
+
+end
